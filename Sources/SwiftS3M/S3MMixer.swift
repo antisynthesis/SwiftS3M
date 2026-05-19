@@ -409,7 +409,12 @@ public final class S3MMixer: @unchecked Sendable {
             finished = true; return
         }
         let pattern = file.patterns[patternIdx]
-        guard row < pattern.rows.count else { return }
+        // Defensive: never index `pattern.rows` with a negative
+        // row. Buggy effect handlers (Bxx / Cxx / SBx) used to set
+        // `row = -1` to compensate for a legacy `row += 1` in
+        // advanceTick; this guard makes any future regression of
+        // that shape go quiet instead of crashing.
+        guard row >= 0 && row < pattern.rows.count else { return }
         let rowCells = pattern.rows[row]
 
         // Clear per-row effect overlays. Volume slides/portas
@@ -588,18 +593,19 @@ public final class S3MMixer: @unchecked Sendable {
         if info > 0 { speed = Int(info) }
     }
 
-    // B: position jump.
+    // B: position jump to order x, row 0 of that pattern.
     private func handleB(info: UInt8) {
         order = Int(info)
-        row = -1
+        row = 0
         rowJumped = true
     }
 
-    // C: pattern break to row x.
+    // C: pattern break to row x of the next order. Param nibbles
+    // encode the row in decimal (FT2/S3M convention).
     private func handleC(info: UInt8) {
         let target = Int((info >> 4) * 10 + (info & 0x0F))
         order += 1
-        row = min(target, 63) - 1
+        row = min(max(0, target), 63)
         rowJumped = true
     }
 
@@ -783,7 +789,7 @@ public final class S3MMixer: @unchecked Sendable {
                 patternLoopCount -= 1
             }
             if patternLoopCount > 0 {
-                row = patternLoopRow - 1
+                row = max(0, patternLoopRow)
                 rowJumped = true
             }
         }
@@ -796,7 +802,12 @@ public final class S3MMixer: @unchecked Sendable {
         let patternIdx = Int(file.orders[order])
         guard patternIdx < file.patterns.count else { return }
         let pattern = file.patterns[patternIdx]
-        guard row < pattern.rows.count else { return }
+        // Defensive: never index `pattern.rows` with a negative
+        // row. Buggy effect handlers (Bxx / Cxx / SBx) used to set
+        // `row = -1` to compensate for a legacy `row += 1` in
+        // advanceTick; this guard makes any future regression of
+        // that shape go quiet instead of crashing.
+        guard row >= 0 && row < pattern.rows.count else { return }
         let rowCells = pattern.rows[row]
 
         for (channel, cell) in rowCells.enumerated() where channel < voices.count {
