@@ -20,7 +20,7 @@ That's the whole API surface, roughly.
 - [Installation](#installation)
 - [Quick start](#quick-start)
 - [AVAudioEngine bridge](#avaudioengine-bridge)
-- [Status and roadmap](#status-and-roadmap)
+- [Status](#status)
 - [Requirements](#requirements)
 - [License](#license)
 
@@ -133,7 +133,7 @@ Effects evaluate **once per tick**. Note triggers and tick-0-only effects fire o
 - **V** Global volume
 - **X** Set pan (0x00..0x80, surround at 0xA4)
 
-Type-2 (Adlib / OPL2 FM) instruments render through an in-tree YM3812 emulator. See [Status and roadmap](#status-and-roadmap) for the caveats on the FM model.
+Type-2 (Adlib / OPL2 FM) instruments render through an in-tree YM3812 emulator with four waveforms, rhythm mode, AM/VIB LFOs, and KSR envelope scaling. See [Status](#status) for the full feature breakdown.
 
 ## Installation
 
@@ -240,24 +240,18 @@ final class S3MPlayer {
 
 The render callback runs on the audio thread. `S3MMixer` is `@unchecked Sendable` precisely because the host is expected to park it on one thread and never touch it elsewhere. There is no internal locking and concurrent renders will corrupt voice state.
 
-## Status and roadmap
+## Status
 
-The parser handles the full S3M header, instrument table (8-bit signed/unsigned and 16-bit signed PCM, plus type-2 Adlib register bytes), and packed pattern data per `S3M.TXT`. The mixer implements the full effect set listed in [Timing model](#timing-model).
+v1 is feature-complete against `S3M.TXT` for the playback path. The parser handles the full S3M header, instrument table (8-bit signed/unsigned and 16-bit signed PCM, plus type-2 Adlib register bytes), and packed pattern data. The mixer implements the full effect set listed in [Timing model](#timing-model).
 
-Type-2 (Adlib) instruments route through `OPL2Synth`, a 9-channel 2-operator FM emulator modeled on the Yamaha YM3812. The model is MVP-grade rather than cycle-accurate. Specifically:
+Type-2 (Adlib) instruments route through `OPL2Synth`, a 9-channel 2-operator FM emulator modeled on the Yamaha YM3812:
 
-- Sine waveform only. The OPL3 `E0` / `E1` waveform-select bytes are parsed and stored but currently ignored.
-- ADSR envelopes use continuous (not LFO-clocked) rates calibrated to sound musically right rather than to match LSB-accurate Yamaha timing.
-- AM (tremolo) and VIB (vibrato) operator bits are parsed but not yet routed into LFOs.
-- OPL2 rhythm mode (channels 25..31, bass / snare / tom / cymbal / hi-hat) is silent; melodic-only S3Ms cover the overwhelming majority of the format's use.
+- **Four OPL2 waveforms** sourced from the instrument's `E0` / `E1` register bytes: pure sine, half sine, absolute (rectified) sine, and quarter sine.
+- **Yamaha-style envelope timing** clocked off the documented 49716 Hz envelope-generator reference; per-operator KSR scaling adds the key-scale-number offset to the rate so higher notes envelope faster.
+- **Operator-level AM and VIB** routed from two global LFOs (≈3.7 Hz / ≈6.4 Hz). The AM and VIB bits on the operator's character byte gate participation; depth defaults to Yamaha "deep" settings (4.8 dB / ±14 cents).
+- **Rhythm mode** for channels 25..29 (bass drum / snare / tom / cymbal / hi-hat). A shared 16-bit LFSR noise generator drives the SD / HH / CY voices; rhythm mode auto-engages when the channel map admits any of those slots.
 
-Trackers that lean heavily on cycle-accurate OPL2 timing or rhythm-mode percussion will sound approximate. Pure PCM modules play back fully and match the spec.
-
-Open issues worth a follow-up pass:
-
-- Cycle-accurate OPL2 envelopes (LFO-clocked rates, KSR scaling)
-- OPL2 rhythm mode (channels 25..31)
-- AM / VIB operator-level LFO routing
+Pure PCM modules play back fully and match the spec. The FM path is voice-accurate and rhythm-aware; sample-accurate cycle parity with hardware OPL2 still has a few percent of timing drift at extreme envelope rates, which is the only intentional shortcut left.
 
 Contributions welcome; see [`CONTRIBUTING.md`](CONTRIBUTING.md).
 

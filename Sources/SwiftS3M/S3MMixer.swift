@@ -85,13 +85,18 @@ public final class S3MMixer: @unchecked Sendable {
     private let channelPan: [Float]
 
     /// FM synth for type-2 (Adlib) instruments. S3M channels
-    /// 16..24 route through this instead of the PCM voice array.
-    /// Channels 25..31 are reserved for OPL2 rhythm mode in real
-    /// ST3 (bass / snare / tom / cymbal / hi-hat); we currently
-    /// treat them as silent.
+    /// 16..24 route through this as melodic OPL2 voices; channels
+    /// 25..29 route as the five rhythm-mode percussion voices
+    /// (bass drum / snare / tom / cymbal / hi-hat).
     private let opl: OPL2Synth
     private static let adlibChannelBase: Int = 16
     private static let adlibChannelCount: Int = 9
+    /// First / last S3M channel index for rhythm-mode percussion
+    /// triggers. The five voices live on 25..29; 30..31 stay
+    /// silent (real ST3 reserved them for future use that never
+    /// materialized).
+    private static let rhythmChannelBase: Int = 25
+    private static let rhythmChannelCount: Int = 5
     /// True for voices that the most recent row trigger routed
     /// through `opl` instead of the PCM mixer. Used so per-tick
     /// effects (pitch overlays, volume changes, key-off) hit the
@@ -259,9 +264,25 @@ public final class S3MMixer: @unchecked Sendable {
             return (v / 15.0) * 2.0 - 1.0
         }
         self.opl = OPL2Synth(sampleRate: sampleRate)
+        // Enable OPL2 rhythm mode if the channel map admits any of
+        // the percussion-channel slots. Files that don't use them
+        // pay nothing for the feature — `setRhythmMode(false)` is
+        // a no-op when the flag is already false.
+        let needsRhythm = (Self.rhythmChannelBase..<(Self.rhythmChannelBase + Self.rhythmChannelCount))
+            .contains { file.channelEnabled.indices.contains($0) && file.channelEnabled[$0] }
+        self.opl.setRhythmMode(needsRhythm)
         self.framesRemainingInTick = framesPerTick()
         triggerRow(applyNotes: true)
         recomputeEffectiveState()
+    }
+
+    /// Map an S3M channel onto an OPL2 rhythm-mode percussion
+    /// voice when the channel index is in the percussion range
+    /// (25..29). Returns nil for non-percussion channels.
+    private func rhythmVoice(for channel: Int) -> OPL2Synth.PercussionVoice? {
+        let offset = channel - Self.rhythmChannelBase
+        guard offset >= 0, offset < Self.rhythmChannelCount else { return nil }
+        return OPL2Synth.PercussionVoice(rawValue: offset)
     }
 
     /// Channel `c` maps onto an OPL2 voice when `c >= 16` and the
@@ -493,11 +514,14 @@ public final class S3MMixer: @unchecked Sendable {
         // OPL2 synth instead of the PCM mixer. The rule is "Adlib
         // channel index AND type-2 instrument"; this lets a single
         // S3M happily mix PCM and FM cells on different channels.
-        if channel >= Self.adlibChannelBase
+        // Rhythm-mode channels (25..29) also get routed through
+        // OPL2 when the instrument is type 2.
+        let isMelodicAdlib = channel >= Self.adlibChannelBase
             && channel < Self.adlibChannelBase + Self.adlibChannelCount
-            && ins.type == 2 {
+        let isRhythmAdlib = channel >= Self.rhythmChannelBase
+            && channel < Self.rhythmChannelBase + Self.rhythmChannelCount
+        if (isMelodicAdlib || isRhythmAdlib) && ins.type == 2 {
             voiceIsAdlib[channel] = true
-            // The PCM voice is silent; OPL2 handles audio.
             voices[channel].active = false
         } else {
             voiceIsAdlib[channel] = false
@@ -510,6 +534,9 @@ public final class S3MMixer: @unchecked Sendable {
             voices[channel].active = false
             if let oplIdx = adlibIndex(for: channel) {
                 opl.keyOff(channel: oplIdx)
+            }
+            if let perc = rhythmVoice(for: channel), voiceIsAdlib[channel] {
+                opl.keyOffPercussion(perc)
             }
             return
         }
@@ -538,6 +565,18 @@ public final class S3MMixer: @unchecked Sendable {
                 opl.keyOn(
                     channel: oplIdx,
                     note: cell.note,
+                    instrument: file.instruments[insIdx],
+                    volume: voices[channel].volume
+                )
+            }
+            return
+        }
+
+        if let perc = rhythmVoice(for: channel), voiceIsAdlib[channel] {
+            let insIdx = voices[channel].instrumentIndex - 1
+            if insIdx >= 0 && insIdx < file.instruments.count {
+                opl.triggerPercussion(
+                    perc,
                     instrument: file.instruments[insIdx],
                     volume: voices[channel].volume
                 )
