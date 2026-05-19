@@ -2,7 +2,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "swift-s3m",
+    name: "SwiftS3M",
     platforms: [
         .iOS(.v17),
         .macOS(.v14),
