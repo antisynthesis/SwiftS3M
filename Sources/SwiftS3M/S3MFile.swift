@@ -89,12 +89,16 @@ public struct S3MFile: Sendable {
         masterVolume = data[0x33]
         signedSamples = data.readUInt16LE(at: 0x2A) == 1
 
-        // Channel settings (32 bytes). 0x00..0x07 = left side enabled,
-        // 0x08..0x0F = right side enabled, anything else = disabled.
+        // Channel settings (32 bytes). Per S3M.TXT: low bits encode the
+        // channel role — 0x00..0x07 = PCM Left, 0x08..0x0F = PCM Right,
+        // 0x10..0x1F = AdLib voices. Bit 7 (0x80) is the *disable* flag,
+        // and 0xFF means the channel slot is absent entirely. We had been
+        // treating anything ≥ 0x10 as disabled, which silently muted every
+        // AdLib voice in tracker files that use the canonical slot range.
         var enabled = [Bool](repeating: false, count: 32)
         for i in 0..<32 {
             let v = data[0x40 + i]
-            enabled[i] = v < 0x10
+            enabled[i] = (v & 0x80) == 0 && v != 0xFF
         }
         channelEnabled = enabled
 
