@@ -107,6 +107,15 @@ public final class S3MMixer: @unchecked Sendable {
     private var patternLoopRow: Int = 0
     private var patternLoopCount: Int = 0
 
+    /// Orders we've played from the first row to the last. Used to
+    /// detect end-of-song loops: most tracker authors end a song
+    /// with `Bxx` (position jump) back to a previously-played
+    /// order rather than running off the end of the order list,
+    /// so `mixer.finished` never trips on its own. When a B/C
+    /// jump targets a member of this set we treat it as the song
+    /// completing one full play-through and stop.
+    private var playedOrders: Set<Int> = []
+
     /// SEx pattern delay: how many extra times to replay the
     /// current row before advancing. Effects continue running on
     /// each replay, but the cell's note does not retrigger.
@@ -369,6 +378,11 @@ public final class S3MMixer: @unchecked Sendable {
             } else {
                 row += 1
                 if row >= 64 {
+                    // Mark this order as "fully played" before
+                    // advancing. End-of-song loop detection in
+                    // handleB/handleC keys off this set so a Bxx
+                    // back into a played order trips finished.
+                    playedOrders.insert(order)
                     row = 0
                     order += 1
                     if !nextValidOrder() {
@@ -593,20 +607,31 @@ public final class S3MMixer: @unchecked Sendable {
         if info > 0 { speed = Int(info) }
     }
 
-    // B: position jump to order x, row 0 of that pattern.
+    // B: position jump to order x, row 0 of that pattern. A jump
+    // to a previously-played order is the canonical "end of song"
+    // signal in S3M: most authors loop back to order 0 rather than
+    // running off the end of the order list. We honour that and
+    // stop instead of looping forever.
     private func handleB(info: UInt8) {
         order = Int(info)
         row = 0
         rowJumped = true
+        if playedOrders.contains(order) {
+            finished = true
+        }
     }
 
     // C: pattern break to row x of the next order. Param nibbles
-    // encode the row in decimal (FT2/S3M convention).
+    // encode the row in decimal (FT2/S3M convention). Same
+    // "we've been here" loop-detection rule as handleB.
     private func handleC(info: UInt8) {
         let target = Int((info >> 4) * 10 + (info & 0x0F))
         order += 1
         row = min(max(0, target), 63)
         rowJumped = true
+        if playedOrders.contains(order) {
+            finished = true
+        }
     }
 
     // D: volume slide tick-0 (fine).
