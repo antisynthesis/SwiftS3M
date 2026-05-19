@@ -110,7 +110,7 @@ samplesPerRow  = samplesPerTick * speed
 
 So at the defaults (`speed = 6`, `tempo = 125`, `sampleRate = 44100`), you get a 50 Hz tick and 882 samples per tick, which is the canonical ST3 timing.
 
-Effects evaluate **once per tick**. Note triggers and tick-0-only effects fire on tick 0; continuous slides apply on ticks 1..speed-1. This library implements:
+Effects evaluate **once per tick**. Note triggers and tick-0-only effects fire on tick 0; continuous slides and modulation apply on every tick. This library implements the full S3M effect set:
 
 - **A** Set speed
 - **B** Position jump
@@ -118,11 +118,22 @@ Effects evaluate **once per tick**. Note triggers and tick-0-only effects fire o
 - **D** Volume slide, including fine variants `DFx` / `DxF`
 - **E** Portamento down, including fine `EFx` and extra-fine `EEx`
 - **F** Portamento up, including fine `FFx` and extra-fine `FEx`
+- **G** Tone portamento (with S1x glissando snap)
+- **H** Vibrato (4 waveforms via S3x)
+- **I** Tremor
+- **J** Arpeggio
+- **K** Vibrato + volume slide (H + D)
+- **L** Tone portamento + volume slide (G + D)
 - **O** Sample offset
+- **Q** Retrigger (all 16 volume-change modes)
+- **R** Tremolo (4 waveforms via S4x)
+- **S** Special group `S0`..`SF` (filter, glissando, finetune, waveform select, pan, surround, pattern loop, note cut, note delay, pattern delay, MIDI macro)
 - **T** Set tempo
+- **U** Fine vibrato (1/4 depth)
 - **V** Global volume
+- **X** Set pan (0x00..0x80, surround at 0xA4)
 
-The remaining effects (vibrato, tremolo, arpeggio, tone porta, retrigger, the `S` group, panning) parse cleanly but currently no-op. See [Status and roadmap](#status-and-roadmap).
+Type-2 (Adlib / OPL2 FM) instruments render through an in-tree YM3812 emulator. See [Status and roadmap](#status-and-roadmap) for the caveats on the FM model.
 
 ## Installation
 
@@ -231,21 +242,24 @@ The render callback runs on the audio thread. `S3MMixer` is `@unchecked Sendable
 
 ## Status and roadmap
 
-Pass 1: the parser handles the full S3M header, the instrument table (8-bit signed/unsigned and 16-bit signed PCM), and packed pattern data. The mixer implements the effects listed in [Timing model](#timing-model).
+The parser handles the full S3M header, instrument table (8-bit signed/unsigned and 16-bit signed PCM, plus type-2 Adlib register bytes), and packed pattern data per `S3M.TXT`. The mixer implements the full effect set listed in [Timing model](#timing-model).
 
-Not yet implemented:
+Type-2 (Adlib) instruments route through `OPL2Synth`, a 9-channel 2-operator FM emulator modeled on the Yamaha YM3812. The model is MVP-grade rather than cycle-accurate. Specifically:
 
-- Vibrato (`H`, `U`)
-- Tremolo (`R`)
-- Arpeggio (`J`)
-- Tone portamento (`G`) and tone-porta + volume-slide (`L`)
-- Retrigger (`Q`)
-- Tremor (`I`)
-- Panning effect (`X`) and the surround `XA4`
-- Special `S` group (set filter, glissando, finetune, vibrato waveform, pattern loop, pattern delay, note delay, note cut)
-- Adlib (OPL2) instrument rendering. Type-2 instruments parse but produce silence.
+- Sine waveform only. The OPL3 `E0` / `E1` waveform-select bytes are parsed and stored but currently ignored.
+- ADSR envelopes use continuous (not LFO-clocked) rates calibrated to sound musically right rather than to match LSB-accurate Yamaha timing.
+- AM (tremolo) and VIB (vibrato) operator bits are parsed but not yet routed into LFOs.
+- OPL2 rhythm mode (channels 25..31, bass / snare / tom / cymbal / hi-hat) is silent; melodic-only S3Ms cover the overwhelming majority of the format's use.
 
-These are tracked for follow-up passes. Contributions welcome; see [`CONTRIBUTING.md`](CONTRIBUTING.md).
+Trackers that lean heavily on cycle-accurate OPL2 timing or rhythm-mode percussion will sound approximate. Pure PCM modules play back fully and match the spec.
+
+Open issues worth a follow-up pass:
+
+- Cycle-accurate OPL2 envelopes (LFO-clocked rates, KSR scaling)
+- OPL2 rhythm mode (channels 25..31)
+- AM / VIB operator-level LFO routing
+
+Contributions welcome; see [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## Requirements
 
