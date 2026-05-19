@@ -84,6 +84,20 @@ public final class S3MMixer: @unchecked Sendable {
     private var voices: [Voice]
     private let channelPan: [Float]
 
+    /// FM synth for type-2 (Adlib) instruments. S3M channels
+    /// 16..24 route through this instead of the PCM voice array.
+    /// Channels 25..31 are reserved for OPL2 rhythm mode in real
+    /// ST3 (bass / snare / tom / cymbal / hi-hat); we currently
+    /// treat them as silent.
+    private let opl: OPL2Synth
+    private static let adlibChannelBase: Int = 16
+    private static let adlibChannelCount: Int = 9
+    /// True for voices that the most recent row trigger routed
+    /// through `opl` instead of the PCM mixer. Used so per-tick
+    /// effects (pitch overlays, volume changes, key-off) hit the
+    /// right backend.
+    private var voiceIsAdlib: [Bool]
+
     /// Set to `true` once the order list has been exhausted.
     public private(set) var finished: Bool = false
 
@@ -230,13 +244,25 @@ public final class S3MMixer: @unchecked Sendable {
         self.tempo = Int(file.initialTempo == 0 ? 125 : file.initialTempo)
         self.globalVolume = Int(file.globalVolume)
         self.voices = Array(repeating: Voice(), count: 32)
+        self.voiceIsAdlib = Array(repeating: false, count: 32)
         self.channelPan = file.channelPanning.map { raw -> Float in
             let v = Float(min(raw, 15))
             return (v / 15.0) * 2.0 - 1.0
         }
+        self.opl = OPL2Synth(sampleRate: sampleRate)
         self.framesRemainingInTick = framesPerTick()
         triggerRow(applyNotes: true)
         recomputeEffectiveState()
+    }
+
+    /// Channel `c` maps onto an OPL2 voice when `c >= 16` and the
+    /// channel has been claimed by a type-2 instrument. Returns
+    /// the OPL2 channel index (0..8) when applicable.
+    private func adlibIndex(for channel: Int) -> Int? {
+        guard channel >= Self.adlibChannelBase,
+              channel < Self.adlibChannelBase + Self.adlibChannelCount,
+              voiceIsAdlib[channel] else { return nil }
+        return channel - Self.adlibChannelBase
     }
 
     // MARK: - Render entry point
@@ -273,6 +299,12 @@ public final class S3MMixer: @unchecked Sendable {
         for v in 0..<voices.count where voices[v].active {
             mixVoice(into: buffer, frames: frames, voice: v)
         }
+        // OPL2 channels share the same global/master volume scaling
+        // so a mixed PCM+FM module sits at a consistent loudness.
+        let globalAmp = Float(globalVolume) / 64.0 *
+                        Float(file.masterVolume & 0x7F) / 127.0 /
+                        Float(max(1, min(32, file.activeChannelCount)))
+        opl.render(into: buffer, frames: frames, mainAmp: globalAmp)
     }
 
     private func mixVoice(into buffer: UnsafeMutablePointer<Float>, frames: Int, voice: Int) {
@@ -437,12 +469,29 @@ public final class S3MMixer: @unchecked Sendable {
         voices[channel].c2spd = ins.c2spd
         voices[channel].volume = Int(ins.defaultVolume)
         voices[channel].pan = channelPan[channel]
+
+        // Decide whether this voice will be rendered through the
+        // OPL2 synth instead of the PCM mixer. The rule is "Adlib
+        // channel index AND type-2 instrument"; this lets a single
+        // S3M happily mix PCM and FM cells on different channels.
+        if channel >= Self.adlibChannelBase
+            && channel < Self.adlibChannelBase + Self.adlibChannelCount
+            && ins.type == 2 {
+            voiceIsAdlib[channel] = true
+            // The PCM voice is silent; OPL2 handles audio.
+            voices[channel].active = false
+        } else {
+            voiceIsAdlib[channel] = false
+        }
     }
 
     private func installNote(channel: Int, cell: S3MPattern.Cell, usesTonePorta: Bool) {
         guard cell.note != 0xFF else { return }
         if cell.note == 0xFE {
             voices[channel].active = false
+            if let oplIdx = adlibIndex(for: channel) {
+                opl.keyOff(channel: oplIdx)
+            }
             return
         }
         let octave = Int(cell.note >> 4)
@@ -460,6 +509,23 @@ public final class S3MMixer: @unchecked Sendable {
         }
 
         voices[channel].note = cell.note
+
+        if let oplIdx = adlibIndex(for: channel) {
+            // Route the trigger to the FM synth using the same
+            // instrument we just installed (re-fetch since voice
+            // doesn't hold the instrument struct itself).
+            let insIdx = voices[channel].instrumentIndex - 1
+            if insIdx >= 0 && insIdx < file.instruments.count {
+                opl.keyOn(
+                    channel: oplIdx,
+                    note: cell.note,
+                    instrument: file.instruments[insIdx],
+                    volume: voices[channel].volume
+                )
+            }
+            return
+        }
+
         voices[channel].samplePos = 0
         voices[channel].active = !voices[channel].sample.isEmpty
         voices[channel].baseStep = newStep
@@ -480,6 +546,9 @@ public final class S3MMixer: @unchecked Sendable {
     private func applyVolumeColumn(channel: Int, cell: S3MPattern.Cell) {
         if cell.volume != 0xFF && cell.volume <= 64 {
             voices[channel].volume = Int(cell.volume)
+            if let oplIdx = adlibIndex(for: channel) {
+                opl.setVolume(channel: oplIdx, volume: Int(cell.volume))
+            }
         }
     }
 

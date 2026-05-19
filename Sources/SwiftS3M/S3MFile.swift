@@ -189,6 +189,38 @@ public enum S3MError: Error, LocalizedError, Sendable {
     }
 }
 
+// MARK: - Adlib registers
+
+/// Raw OPL2 register bytes shipped with a type-2 (Adlib)
+/// instrument. Names follow the original `S3M.TXT` field names,
+/// which themselves echo the Yamaha YM3812 register addresses
+/// they correspond to.
+struct AdlibRegisters: Sendable, Hashable {
+
+    /// `D00` AM / VIB / EG / KSR / MULT (modulator).
+    var modChar: UInt8 = 0
+    /// `D01` AM / VIB / EG / KSR / MULT (carrier).
+    var carChar: UInt8 = 0
+    /// `D40` KSL / TL (modulator).
+    var modScale: UInt8 = 0
+    /// `D41` KSL / TL (carrier).
+    var carScale: UInt8 = 0
+    /// `D60` AR / DR (modulator).
+    var modAttack: UInt8 = 0
+    /// `D61` AR / DR (carrier).
+    var carAttack: UInt8 = 0
+    /// `D80` SL / RR (modulator).
+    var modSustain: UInt8 = 0
+    /// `D81` SL / RR (carrier).
+    var carSustain: UInt8 = 0
+    /// `E0` waveform select (modulator). OPL3 only.
+    var modWave: UInt8 = 0
+    /// `E1` waveform select (carrier). OPL3 only.
+    var carWave: UInt8 = 0
+    /// `C0` feedback / connection (FB bits 1..3, CNT bit 0).
+    var feedConnect: UInt8 = 0
+}
+
 // MARK: - Instrument
 
 struct S3MInstrument: Sendable {
@@ -205,10 +237,11 @@ struct S3MInstrument: Sendable {
         bits16: false,
         stereo: false,
         defaultVolume: 64,
-        c2spd: 8363
+        c2spd: 8363,
+        adlib: AdlibRegisters()
     )
 
-    let type: UInt8         // 0=empty, 1=PCM, 2=Adlib (unsupported)
+    let type: UInt8         // 0=empty, 1=PCM, 2=Adlib
     let name: String
     /// PCM samples normalized to signed 16-bit, regardless of the
     /// source bit depth. Empty array for non-PCM instruments.
@@ -222,6 +255,9 @@ struct S3MInstrument: Sendable {
     /// Frequency at which the sample plays at its native pitch
     /// (C-4). Used to convert note → playback rate.
     let c2spd: UInt32
+    /// OPL2 register bytes for type-2 (Adlib) instruments. Zero
+    /// for PCM / empty instruments.
+    let adlib: AdlibRegisters
 
     init(data: Data, at offset: Int, signedPCM: Bool) {
         let type = data[offset]
@@ -251,6 +287,23 @@ struct S3MInstrument: Sendable {
             )
         }
 
+        // Adlib (type 2) instruments stash their OPL2 register
+        // bytes at fixed offsets in the instrument header.
+        var adlib = AdlibRegisters()
+        if type == 2 && offset + 0x1B < data.count {
+            adlib.modChar     = data[offset + 0x10]
+            adlib.carChar     = data[offset + 0x11]
+            adlib.modScale    = data[offset + 0x12]
+            adlib.carScale    = data[offset + 0x13]
+            adlib.modAttack   = data[offset + 0x14]
+            adlib.carAttack   = data[offset + 0x15]
+            adlib.modSustain  = data[offset + 0x16]
+            adlib.carSustain  = data[offset + 0x17]
+            adlib.modWave     = data[offset + 0x18]
+            adlib.carWave     = data[offset + 0x19]
+            adlib.feedConnect = data[offset + 0x1A]
+        }
+
         self.type = type
         self.name = name
         self.sampleData = samples
@@ -261,11 +314,12 @@ struct S3MInstrument: Sendable {
         self.stereo = stereo
         self.defaultVolume = defaultVolume
         self.c2spd = c2spd
+        self.adlib = adlib
     }
 
     private init(type: UInt8, name: String, sampleData: [Int16], loopBegin: Int,
                  loopEnd: Int, loops: Bool, bits16: Bool, stereo: Bool,
-                 defaultVolume: UInt8, c2spd: UInt32) {
+                 defaultVolume: UInt8, c2spd: UInt32, adlib: AdlibRegisters) {
         self.type = type
         self.name = name
         self.sampleData = sampleData
@@ -276,6 +330,7 @@ struct S3MInstrument: Sendable {
         self.stereo = stereo
         self.defaultVolume = defaultVolume
         self.c2spd = c2spd
+        self.adlib = adlib
     }
 
     private static func readString(_ data: Data, range: Range<Int>) -> String {
